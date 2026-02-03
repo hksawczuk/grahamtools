@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / packaging
+build/
+dist/
+
+# Jupyter / editor
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Matplotlib output
+*.png
+*.pdf
+
+# Large or generated data
+*.g6
+*.graph6
+data/
+outputs/
+
+# Nauty scratch
+nauty_tmp/

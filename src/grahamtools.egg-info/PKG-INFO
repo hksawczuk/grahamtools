@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: grahamtools
+Version: 0.1.0
+Summary: Utilities for iterated line graphs, Graham sequences, WL-1, and collision searches.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: networkx>=3.0
+Requires-Dist: matplotlib>=3.7

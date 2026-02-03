@@ -1,0 +1,2 @@
+[console_scripts]
+graham = grahamtools.cli.main:main
