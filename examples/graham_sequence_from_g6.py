@@ -34,14 +34,17 @@ def graham_sequence_from_graph(G: nx.Graph, opts: GrahamOptions) -> List[int]:
 
 
 if __name__ == "__main__":
-    g6 = "DsC"  # replace
-    opts = GrahamOptions(k_max=9, n_cap=2_000_000, m_cap=5_000_000)
+    g6a = "FlCKG"
+    g6b = "FxCGg"
+    # opts = GrahamOptions(k_max=7, n_cap=2_000_000, m_cap=5_000_000)
 
-    G = g6_to_nx(g6)
-    seq = graham_sequence_from_graph(G, opts)
-    print("g6:", g6)
-    print("Graham sequence:", seq)
+    # G = g6_to_nx(g6)
+    # seq = graham_sequence_from_graph(G, opts)
+    # print("g6:", g6)
+    # print("Graham sequence:", seq)
 
     # Quick sanity: package function (adjlist-based) for the first few
     from grahamtools.invariants.graham import graham_sequence_g6
-    print("Package prefix:", graham_sequence_g6(g6, 6))
+    print("Package prefix:", graham_sequence_g6(g6a, 8))
+    print("Package prefix:", graham_sequence_g6(g6b, 8))
+
