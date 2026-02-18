@@ -215,11 +215,24 @@ def _pair_to_idx_list(n: int):
 def _all_perms(n: int):
     return list(permutations(range(n)))
 
+_canon_cache: Dict[Tuple, int] = {}
+
 def canon_key_bruteforce_bitset(edges: list[tuple[int,int]], n: int) -> int:
     """
-    True canonical key under full S_n: min over all permutations.
+    Canonical key under full S_n: min edge-bitset over all permutations.
     edges: list of unique unordered edges (u<v), 0-based.
+
+    Uses memoization: many vertices share the same base-edge set,
+    so we cache results keyed by (frozenset(edges), n).
     """
+    cache_key = (tuple(edges), n)
+    if cache_key in _canon_cache:
+        return _canon_cache[cache_key]
+
+    if not edges:
+        _canon_cache[cache_key] = 0
+        return 0
+
     idx = _pair_to_idx_list(n)
     perms = _all_perms(n)
 
@@ -233,7 +246,10 @@ def canon_key_bruteforce_bitset(edges: list[tuple[int,int]], n: int) -> int:
             bits |= 1 << idx[pu][pv]
         if best is None or bits < best:
             best = bits
-    return best or 0
+
+    result = best or 0
+    _canon_cache[cache_key] = result
+    return result
 
 @lru_cache(maxsize=None)
 def _idx_to_pair(n: int) -> List[Tuple[int, int]]:
@@ -247,8 +263,19 @@ def _idx_to_pair(n: int) -> List[Tuple[int, int]]:
 def _is_forest_edgebit(bits: int, n: int) -> bool:
     """
     Decide whether the simple graph on {0..n-1} encoded by edge-bitset `bits`
-    is acyclic (a forest). Union-find cycle detection.
+    is acyclic (a forest). Uses edge-count pre-filter then union-find.
     """
+    if bits == 0:
+        return True
+
+    # Fast pre-filter: a forest on n vertices has at most n-1 edges.
+    # Count edges via popcount.
+    nedges = bin(bits).count('1')
+    if nedges >= n:
+        return False
+
+    # Determine which vertices are actually used and do union-find only on them.
+    pairs = _idx_to_pair(n)
     parent = list(range(n))
     rank = [0] * n
 
@@ -271,11 +298,11 @@ def _is_forest_edgebit(bits: int, n: int) -> bool:
             rank[ra] += 1
         return True
 
-    pairs = _idx_to_pair(n)
-    while bits:
-        lsb = bits & -bits
+    tmp = bits
+    while tmp:
+        lsb = tmp & -tmp
         idx = lsb.bit_length() - 1
-        bits ^= lsb
+        tmp ^= lsb
         u, v = pairs[idx]
         if not union(u, v):
             return False
@@ -351,6 +378,9 @@ def generate_levels_Kn_ids(n: int, k: int, prune_cycles: bool = False) -> Tuple[
 
                 if prune_cycles:
                     b = bits_prev[e1] | bits_prev[e2]
+                    # Fast pre-filter: forest on n vertices has <= n-1 edges
+                    if bin(b).count('1') >= n:
+                        continue
                     if not _is_forest_edgebit(b, n):
                         continue
                     bits_next_map[p] = b
