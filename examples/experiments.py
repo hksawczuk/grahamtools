@@ -10,7 +10,7 @@ Experiments:
   3. Fiber closure boundary detection
   4. Fiber graph structure (SS/SC/CC breakdown) for non-closed fibers
 
-Requires labels_kn.py in the same directory.
+Requires the grahamtools package.
 """
 
 from __future__ import annotations
@@ -22,15 +22,22 @@ from itertools import combinations
 from functools import lru_cache
 from typing import Dict, List, Tuple, Set
 
-from labels_kn import (
-    generate_levels_Kn_ids,
-    expand_to_simple_base_edges_id,
-    canon_key_bruteforce_bitset,
-    aut_size_via_color_classes,
-    format_label,
-    _normalize_target_1based,
-)
+from grahamtools.kn.levels import generate_levels_Kn_ids
+from grahamtools.kn.expand import expand_to_simple_base_edges_id
+from grahamtools.kn.classify import canon_key
+from grahamtools.utils.automorphisms import aut_size_edges
+from grahamtools.kn.labels import format_label
 import math
+
+
+def _normalize_target_1based(target_edges_1based):
+    """Normalize 1-based edge list to 0-based sorted unique, i<j."""
+    target01 = []
+    for u, v in target_edges_1based:
+        u -= 1; v -= 1
+        if u > v: u, v = v, u
+        target01.append((u, v))
+    return sorted(set(target01))
 
 
 # ─────────────────────────────────────────────
@@ -100,7 +107,7 @@ def get_all_coefficients(n: int, k: int, endpoints_by_level) -> Dict[int, Dict]:
     buckets = {}
     for v in range(Vk_size):
         edges = expand_to_simple_base_edges_id(v, k, endpoints_by_level)
-        key = canon_key_bruteforce_bitset(edges, n)
+        key = canon_key(edges, n)
         if key not in buckets:
             buckets[key] = {"edges": edges, "freq": 0}
         buckets[key]["freq"] += 1
@@ -108,7 +115,7 @@ def get_all_coefficients(n: int, k: int, endpoints_by_level) -> Dict[int, Dict]:
     result = {}
     for key, b in buckets.items():
         edges = b["edges"]
-        aut = aut_size_via_color_classes(edges, n)
+        aut = aut_size_edges(edges, n)
         orbit = math.factorial(n) // aut
         freq = b["freq"]
         coeff = freq // orbit if orbit else 0

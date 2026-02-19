@@ -16,43 +16,16 @@ Usage:
 Output: unified coefficient table and growth rate ranking.
 """
 import argparse
-import sys
-import os
 import math
 import time
 import json
 from collections import defaultdict
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from labels_kn import (
-    generate_levels_Kn_ids,
-    expand_to_simple_base_edges_id,
-    canon_key_bruteforce_bitset,
-    aut_size_via_color_classes,
-    _canon_cache,
-)
-
-
-def tree_name(edges, n):
-    if not edges:
-        return "K1"
-    nedges = len(edges)
-    nv = nedges + 1
-    deg = [0] * n
-    for u, v in edges:
-        deg[u] += 1
-        deg[v] += 1
-    active_degs = sorted([d for d in deg if d > 0], reverse=True)
-    max_d = active_degs[0] if active_degs else 0
-    if nedges == 1:
-        return "K2"
-    if max_d <= 2:
-        return f"P{nv}"
-    if active_degs.count(1) == nedges and max_d == nedges:
-        return f"K1,{nedges}"
-    ds_str = "".join(str(d) for d in active_degs)
-    return f"T{nv}[{ds_str}]"
+from grahamtools.kn.levels import generate_levels_Kn_ids
+from grahamtools.kn.expand import expand_to_simple_base_edges_id
+from grahamtools.kn.classify import canon_key, _canon_key_cache as _canon_cache
+from grahamtools.utils.automorphisms import aut_size_edges
+from grahamtools.utils.naming import tree_name
 
 
 def fiber_analysis(n, max_k):
@@ -78,7 +51,7 @@ def fiber_analysis(n, max_k):
         buckets = {}
         for v in Vk:
             edges = expand_to_simple_base_edges_id(v, k, ep)
-            key = canon_key_bruteforce_bitset(edges, n)
+            key = canon_key(edges, n)
             if key not in buckets:
                 buckets[key] = {"edges": edges, "freq": 0}
             buckets[key]["freq"] += 1
@@ -87,7 +60,7 @@ def fiber_analysis(n, max_k):
         for key, bucket in buckets.items():
             edges = bucket["edges"]
             freq = bucket["freq"]
-            aut = aut_size_via_color_classes(edges, n)
+            aut = aut_size_edges(edges, n)
             orbit_sz = math.factorial(n) // aut
             coeff = freq // orbit_sz
 

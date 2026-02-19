@@ -21,6 +21,9 @@ import time
 from collections import defaultdict
 from itertools import combinations
 
+from grahamtools.utils.connectivity import is_connected_edges
+from grahamtools.utils.linegraph_edgelist import gamma_sequence_edgelist
+
 
 # ============================================================
 #  Precomputed fiber coefficients from K5/K6/K7 experiments
@@ -131,26 +134,7 @@ def edges_to_adj(edges):
 
 def is_connected(edges):
     """Check if edge set forms a connected graph."""
-    if not edges:
-        return True
-    adj = defaultdict(set)
-    verts = set()
-    for u, v in edges:
-        adj[u].add(v)
-        adj[v].add(u)
-        verts.add(u)
-        verts.add(v)
-    visited = set()
-    stack = [next(iter(verts))]
-    while stack:
-        v = stack.pop()
-        if v in visited:
-            continue
-        visited.add(v)
-        for u in adj[v]:
-            if u not in visited:
-                stack.append(u)
-    return len(visited) == len(verts)
+    return is_connected_edges(edges)
 
 
 # ============================================================
@@ -254,42 +238,12 @@ def gamma_from_coeffs(subtree_counts, canon_to_name, max_k):
 #  Brute-force line graph iteration (for verification)
 # ============================================================
 
-def line_graph(edges, n_vertices):
-    m = len(edges)
-    if m == 0:
-        return [], 0
-    incident = defaultdict(list)
-    for idx, (u, v) in enumerate(edges):
-        incident[u].append(idx)
-        incident[v].append(idx)
-    new_edges = set()
-    for v in range(n_vertices):
-        inc = incident.get(v, [])
-        for i in range(len(inc)):
-            for j in range(i + 1, len(inc)):
-                a, b = inc[i], inc[j]
-                if a > b: a, b = b, a
-                new_edges.add((a, b))
-    return sorted(new_edges), m
-
-
 def gamma_bruteforce(edges, max_k, max_edge_limit=5_000_000):
-    verts = set()
-    for u, v in edges:
-        verts.add(u)
-        verts.add(v)
-    v_map = {v: i for i, v in enumerate(sorted(verts))}
-    current_edges = [(v_map[u], v_map[v]) for u, v in edges]
-    current_n = len(verts)
-
-    seq = {0: current_n}
-    for k in range(1, max_k + 1):
-        new_edges, new_n = line_graph(current_edges, current_n)
-        seq[k] = new_n
-        if new_n == 0 or len(new_edges) > max_edge_limit:
-            break
-        current_edges = new_edges
-        current_n = new_n
+    seq_list = gamma_sequence_edgelist(edges, max_k, max_edges=max_edge_limit)
+    seq = {}
+    for k, val in enumerate(seq_list):
+        if val is not None:
+            seq[k] = val
     return seq
 
 

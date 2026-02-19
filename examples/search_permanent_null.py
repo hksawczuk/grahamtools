@@ -161,7 +161,7 @@ def wl1_hash(edges, n):
             mapping[raw] = counter
             counter += 1
         new_colors = [mapping[new_colors_raw[v]] for v in range(n)]
-        if sorted(new_colors) == sorted(colors):
+        if new_colors == colors:
             break
         colors = new_colors
     return tuple(sorted(colors))

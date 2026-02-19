@@ -28,6 +28,10 @@ from collections import defaultdict
 from itertools import combinations, permutations
 from fractions import Fraction
 
+from grahamtools.utils.automorphisms import aut_size_edges
+from grahamtools.utils.connectivity import is_connected_edges, connected_components_edges
+from grahamtools.utils.linegraph_edgelist import line_graph_edgelist, gamma_sequence_edgelist
+
 
 # ============================================================
 #  Canonical forms for trees
@@ -96,186 +100,23 @@ def canonical_tree(edges):
         return "E" + str(min(opt1, opt2))
 
 
-# ============================================================
-#  Automorphism group size
-# ============================================================
-
 def compute_aut_size(edges):
-    """Compute |Aut(T)| by brute force for small trees."""
+    """Compute |Aut(T)| using grahamtools."""
     if not edges:
         return 1
+    n = max(v for e in edges for v in e) + 1
+    return aut_size_edges(edges, n)
 
-    verts = set()
-    for u, v in edges:
-        verts.add(u)
-        verts.add(v)
-    verts = sorted(verts)
-    n = len(verts)
-
-    if n > 10:
-        # For larger trees, use the canonical form structure
-        return compute_aut_from_canon(edges)
-
-    # Relabel to 0..n-1
-    v_map = {v: i for i, v in enumerate(verts)}
-    adj_bits = [0] * n
-    for u, v in edges:
-        adj_bits[v_map[u]] |= 1 << v_map[v]
-        adj_bits[v_map[v]] |= 1 << v_map[u]
-
-    count = 0
-    for p in permutations(range(n)):
-        ok = True
-        for u in range(n):
-            mapped = 0
-            bits = adj_bits[u]
-            while bits:
-                lsb = bits & -bits
-                v = lsb.bit_length() - 1
-                bits ^= lsb
-                mapped |= 1 << p[v]
-            if mapped != adj_bits[p[u]]:
-                ok = False
-                break
-        if ok:
-            count += 1
-    return count
-
-
-def compute_aut_from_canon(edges):
-    """Compute |Aut(T)| from the rooted canonical form.
-    For a rooted tree, |Aut| = product over internal nodes of
-    (number of children with identical subtrees)!
-    For unrooted, we need to handle center edge case.
-    """
-    adj = defaultdict(list)
-    verts = set()
-    for u, v in edges:
-        adj[u].append(v)
-        adj[v].append(u)
-        verts.add(u)
-        verts.add(v)
-
-    vertices = sorted(verts)
-    n = len(vertices)
-
-    # Find center
-    deg = {v: len(adj[v]) for v in vertices}
-    leaves = [v for v in vertices if deg[v] <= 1]
-    removed = set()
-    remaining = n
-
-    while remaining > 2:
-        new_leaves = []
-        for v in leaves:
-            removed.add(v)
-            remaining -= 1
-            for u in adj[v]:
-                if u not in removed:
-                    deg[u] -= 1
-                    if deg[u] == 1:
-                        new_leaves.append(u)
-        leaves = new_leaves
-
-    centers = [v for v in vertices if v not in removed]
-
-    def rooted_canon(root, parent):
-        ch = sorted(rooted_canon(u, root) for u in adj[root] if u != parent)
-        return "(" + "".join(ch) + ")"
-
-    def rooted_aut(root, parent):
-        child_canons = sorted(rooted_canon(u, root) for u in adj[root] if u != parent)
-        child_auts = [rooted_aut(u, root) for u in adj[root] if u != parent]
-
-        result = 1
-        for a in child_auts:
-            result *= a
-
-        # Count multiplicities of identical child subtrees
-        from collections import Counter
-        counts = Counter(child_canons)
-        for c in counts.values():
-            result *= factorial(c)
-
-        return result
-
-    if len(centers) == 1:
-        return rooted_aut(centers[0], None)
-    else:
-        c0, c1 = centers[0], centers[1]
-        # Edge-centered: check if the two halves are isomorphic
-        canon0 = rooted_canon(c0, c1)
-        canon1 = rooted_canon(c1, c0)
-        aut0 = rooted_aut(c0, c1)
-        aut1 = rooted_aut(c1, c0)
-        if canon0 == canon1:
-            return aut0 * aut1 * 2
-        else:
-            return aut0 * aut1
-
-
-# ============================================================
-#  Connected components of an edge subset
-# ============================================================
 
 def connected_components(edges):
     """Return list of edge-lists, one per connected component."""
     if not edges:
         return []
-
-    adj = defaultdict(set)
-    verts = set()
-    for u, v in edges:
-        adj[u].add(v)
-        adj[v].add(u)
-        verts.add(u)
-        verts.add(v)
-
-    visited = set()
-    components = []
-
-    for start in sorted(verts):
-        if start in visited:
-            continue
-        comp_verts = set()
-        queue = [start]
-        while queue:
-            v = queue.pop()
-            if v in visited:
-                continue
-            visited.add(v)
-            comp_verts.add(v)
-            for u in adj[v]:
-                if u not in visited:
-                    queue.append(u)
-        comp_edges = [e for e in edges if e[0] in comp_verts or e[1] in comp_verts]
-        if comp_edges:
-            components.append(comp_edges)
-
-    return components
+    return [comp_edges for _, comp_edges in connected_components_edges(edges)]
 
 
 def is_connected(edges):
-    if not edges:
-        return True
-    adj = defaultdict(set)
-    verts = set()
-    for u, v in edges:
-        adj[u].add(v)
-        adj[v].add(u)
-        verts.add(u)
-        verts.add(v)
-    visited = set()
-    stack = [next(iter(verts))]
-    while stack:
-        v = stack.pop()
-        if v in visited:
-            continue
-        visited.add(v)
-        for u in adj[v]:
-            if u not in visited:
-                stack.append(u)
-    return len(visited) == len(verts)
+    return is_connected_edges(edges)
 
 
 # ============================================================
@@ -532,41 +373,12 @@ class GrahamDP:
 #  Brute-force verification
 # ============================================================
 
-def line_graph(edges, n_vertices):
-    m = len(edges)
-    if m == 0:
-        return [], 0
-    incident = defaultdict(list)
-    for idx, (u, v) in enumerate(edges):
-        incident[u].append(idx)
-        incident[v].append(idx)
-    new_edges = set()
-    for v in range(n_vertices):
-        for i in range(len(incident[v])):
-            for j in range(i + 1, len(incident[v])):
-                a, b = incident[v][i], incident[v][j]
-                if a > b: a, b = b, a
-                new_edges.add((a, b))
-    return sorted(new_edges), m
-
-
 def gamma_bruteforce(edges, max_k, max_edge_limit=5_000_000):
-    verts = set()
-    for u, v in edges:
-        verts.add(u)
-        verts.add(v)
-    v_map = {v: i for i, v in enumerate(sorted(verts))}
-    current_edges = [(v_map[u], v_map[v]) for u, v in edges]
-    current_n = len(verts)
-
-    seq = {0: current_n}
-    for k in range(1, max_k + 1):
-        new_edges, new_n = line_graph(current_edges, current_n)
-        seq[k] = new_n
-        if new_n == 0 or len(new_edges) > max_edge_limit:
-            break
-        current_edges = new_edges
-        current_n = new_n
+    seq_list = gamma_sequence_edgelist(edges, max_k, max_edges=max_edge_limit)
+    seq = {}
+    for k, val in enumerate(seq_list):
+        if val is not None:
+            seq[k] = val
     return seq
 
 
