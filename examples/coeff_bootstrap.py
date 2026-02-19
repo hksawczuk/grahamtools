@@ -98,8 +98,63 @@ def line_graph_large(edges, n_vertices):
     return sorted(new_edges_set), m
 
 
+def _is_star(edges, n_vertices):
+    """Check if graph is K_{1,n}. Returns n (leaf count) or None."""
+    verts = set()
+    for u, v in edges:
+        verts.add(u)
+        verts.add(v)
+    if len(verts) != len(edges) + 1:
+        return None
+    deg = defaultdict(int)
+    for u, v in edges:
+        deg[u] += 1
+        deg[v] += 1
+    deg_seq = sorted(deg.values(), reverse=True)
+    n = len(verts)
+    if deg_seq[0] == n - 1 and all(d == 1 for d in deg_seq[1:]):
+        return n - 1  # leaf count
+    return None
+
+
+def _gamma_regular_tail(num_vertices, r, remaining_k):
+    """Given a regular graph on num_vertices vertices with degree r,
+    compute the next remaining_k terms of the gamma sequence analytically.
+
+    L(K_n) where K_n is r-regular on n vertices:
+      γ_{k+1} = γ_k * r_k / 2
+      r_{k+1} = 2*r_k - 2
+    """
+    seq = []
+    gamma = num_vertices
+    for _ in range(remaining_k):
+        gamma = gamma * r // 2
+        r = 2 * r - 2
+        seq.append(gamma)
+    return seq
+
+
+def _is_regular(edges, n_vertices):
+    """Check if graph is regular. Returns degree r or None."""
+    deg = defaultdict(int)
+    for u, v in edges:
+        deg[u] += 1
+        deg[v] += 1
+    if not deg:
+        return None
+    vals = set(deg.values())
+    if len(vals) == 1:
+        return vals.pop()
+    return None
+
+
 def gamma_sequence(edges, max_k, max_edges=10_000_000, verbose=False):
-    """Compute γ_0, ..., γ_max_k."""
+    """Compute γ_0, ..., γ_max_k.
+
+    Fast paths:
+      - Stars K_{1,n}: L(K_{1,n}) = K_n, then regularity recurrence.
+      - Regular graphs: γ_{k+1} = γ_k * r_k / 2, r_{k+1} = 2*r_k - 2.
+    """
     if not edges:
         return [0] * (max_k + 1)
 
@@ -109,6 +164,20 @@ def gamma_sequence(edges, max_k, max_edges=10_000_000, verbose=False):
         verts.add(v)
     n = len(verts)
 
+    # Fast path: star K_{1,n} → L(K_{1,n}) = K_n (regular)
+    star_n = _is_star(edges, n)
+    if star_n is not None:
+        # γ_0 = n+1 (= star_n + 1), γ_1 = star_n (= |V(K_{star_n})|)
+        seq = [star_n + 1]
+        if max_k >= 1:
+            seq.append(star_n)
+            # K_{star_n} is (star_n - 1)-regular
+            if max_k >= 2:
+                seq.extend(_gamma_regular_tail(star_n, star_n - 1, max_k - 1))
+        if verbose:
+            print(f"      K_{{1,{star_n}}}: analytic via regularity recurrence", flush=True)
+        return seq[:max_k + 1]
+
     # Relabel to 0..n-1
     v_map = {v: i for i, v in enumerate(sorted(verts))}
     current_edges = [(v_map[u], v_map[v]) for u, v in edges]
@@ -117,6 +186,15 @@ def gamma_sequence(edges, max_k, max_edges=10_000_000, verbose=False):
     seq = [current_n]
 
     for k in range(1, max_k + 1):
+        # Check if current graph is regular → analytic tail
+        r = _is_regular(current_edges, current_n)
+        if r is not None:
+            seq.extend(_gamma_regular_tail(current_n, r, max_k - k + 1))
+            if verbose:
+                print(f"      L^{k-1} is {r}-regular on {current_n} vertices: "
+                      f"switching to analytic recurrence", flush=True)
+            return seq[:max_k + 1]
+
         t0 = time.time()
 
         if len(current_edges) > 1_000_000:
