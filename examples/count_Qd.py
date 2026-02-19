@@ -13,6 +13,8 @@ import sys
 from itertools import combinations
 from collections import defaultdict
 
+from grahamtools.utils.automorphisms import aut_size_edges
+
 
 def qd_adj(v1, v2):
     """Check if two integers (as bit vectors) differ in exactly 1 bit."""
@@ -125,20 +127,9 @@ def count_subgraph_in_Qd(tree_edges, d):
 
 
 def aut_size(edges):
-    """Brute force |Aut|."""
-    from itertools import permutations
-    verts = sorted(set(u for e in edges for u in e))
-    n = len(verts)
-    edge_set = set()
-    for u, v in edges:
-        edge_set.add((u, v))
-        edge_set.add((v, u))
-    count = 0
-    for perm in permutations(verts):
-        p = dict(zip(verts, perm))
-        if all((p[u], p[v]) in edge_set for u, v in edges):
-            count += 1
-    return count
+    """Compute |Aut| using grahamtools."""
+    n = max(v for e in edges for v in e) + 1 if edges else 1
+    return aut_size_edges(edges, n)
 
 
 def main():

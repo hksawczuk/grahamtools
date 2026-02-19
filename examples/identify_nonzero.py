@@ -8,6 +8,9 @@ import time
 from itertools import combinations
 from collections import defaultdict
 
+from grahamtools.utils.connectivity import is_connected_edges
+from grahamtools.utils.linegraph_edgelist import line_graph_edgelist, gamma_sequence_edgelist
+
 def tree_canonical(adj, n):
     if n == 1: return ('V',)
     if n == 2: return ('E',)
@@ -51,47 +54,18 @@ def canonical_of_edges(el):
     return tree_canonical(adj, len(adj))
 
 def is_connected(el):
-    if not el: return True
-    adj = defaultdict(set)
-    for u, v in el:
-        adj[u].add(v); adj[v].add(u)
-    verts = set(adj)
-    start = next(iter(verts))
-    vis = {start}; stack = [start]
-    while stack:
-        v = stack.pop()
-        for w in adj[v]:
-            if w not in vis: vis.add(w); stack.append(w)
-    return vis == verts
+    return is_connected_edges(el)
 
 def relabel(el):
     verts = sorted(set(v for e in el for v in e))
     lab = {v: i for i, v in enumerate(verts)}
     return [(lab[u], lab[v]) for u, v in el], len(verts)
 
-def line_graph_edges(edges):
-    m = len(edges)
-    if m == 0: return [], 0
-    incident = defaultdict(list)
-    for idx, (u, v) in enumerate(edges):
-        incident[u].append(idx); incident[v].append(idx)
-    new_edges = set()
-    for v_inc in incident.values():
-        for i in range(len(v_inc)):
-            for j in range(i + 1, len(v_inc)):
-                a, b = v_inc[i], v_inc[j]
-                if a > b: a, b = b, a
-                new_edges.add((a, b))
-    return list(new_edges), m
-
 def graham_value_at_k(edges, n, k, max_edges=30_000_000):
-    cur = list(edges); cur_n = n
-    for step in range(k):
-        new_e, new_n = line_graph_edges(cur)
-        if len(new_e) > max_edges: return None
-        cur = new_e; cur_n = new_n
-        if new_n == 0: return 0
-    return cur_n
+    seq = gamma_sequence_edgelist(edges, k, max_edges=max_edges)
+    if k < len(seq):
+        return seq[k]
+    return None
 
 def enumerate_subtree_counts(edges):
     counts = defaultdict(int)

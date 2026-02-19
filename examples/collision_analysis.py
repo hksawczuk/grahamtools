@@ -14,68 +14,11 @@ Usage: python3 collision_analysis.py [max_edges]
 """
 
 import sys
-import re
 import subprocess
 from collections import defaultdict
 import networkx as nx
 
-
-# ============================================================
-#  |Aut| via dreadnaut
-# ============================================================
-
-def aut_size_nauty(G):
-    """Compute |Aut(G)| using nauty's dreadnaut."""
-    n = G.number_of_nodes()
-    if n <= 1:
-        return 1
-
-    adj = defaultdict(list)
-    for u, v in G.edges():
-        adj[u].append(v)
-        adj[v].append(u)
-
-    lines = [f"n={n} g"]
-    for v in range(n):
-        nbrs = sorted(adj[v])
-        if nbrs:
-            lines.append(" ".join(str(u) for u in nbrs) + ";")
-        else:
-            lines.append(";")
-    lines.append("x")
-    lines.append("q")
-
-    dreadnaut_input = "\n".join(lines) + "\n"
-
-    for cmd in ["dreadnaut", "nauty-dreadnaut"]:
-        try:
-            result = subprocess.run(
-                [cmd], input=dreadnaut_input,
-                capture_output=True, text=True, timeout=10
-            )
-            output = result.stdout + result.stderr
-            for line in output.split('\n'):
-                if 'grpsize' in line:
-                    m2 = re.search(r'grpsize=(\d+)\*10\^(\d+)', line)
-                    if m2:
-                        return int(m2.group(1)) * (10 ** int(m2.group(2)))
-                    m1 = re.search(r'grpsize=(\d+)', line)
-                    if m1:
-                        return int(m1.group(1))
-        except FileNotFoundError:
-            continue
-
-    # Fallback: brute force
-    from itertools import permutations
-    edge_set = set()
-    for u, v in G.edges():
-        edge_set.add((u, v))
-        edge_set.add((v, u))
-    count = 0
-    for perm in permutations(range(n)):
-        if all((perm[u], perm[v]) in edge_set for u, v in G.edges()):
-            count += 1
-    return count
+from grahamtools.utils.automorphisms import aut_size_edges
 
 
 # ============================================================
@@ -116,7 +59,9 @@ def enumerate_via_nauty(max_edges):
                 if a > b:
                     a, b = b, a
 
-                aut = aut_size_nauty(G)
+                aut = aut_size_edges(
+                    [(min(u, v), max(u, v)) for u, v in G.edges()], nv
+                )
                 is_tree = (ne == nv - 1)
 
                 # Name
