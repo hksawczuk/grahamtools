@@ -24,103 +24,11 @@ from fractions import Fraction
 from functools import reduce
 from math import gcd
 
-from grahamtools.utils.connectivity import is_connected_edges
-from grahamtools.utils.linegraph_edgelist import (
-    line_graph_edgelist,
-    gamma_sequence_edgelist,
-)
-from grahamtools.utils.canonical import (
-    canonical_graph_nauty,
-    canonical_graph_bruteforce,
-)
+from grahamtools.utils.linegraph_edgelist import gamma_sequence_edgelist
 from grahamtools.utils.subgraphs import enumerate_connected_subgraphs
 from grahamtools.utils.naming import describe_graph
 from grahamtools.utils.linalg import row_reduce_fraction
-from grahamtools.external.nauty import nauty_available
-
-
-# ============================================================
-#  Coefficient extraction via Mobius inversion
-# ============================================================
-
-def compute_all_coefficients(
-    all_types: dict[object, tuple[int, list[tuple[int, int]], int, int]],
-    max_k: int,
-    *,
-    max_edges: int = 5_000_000,
-) -> tuple[
-    dict[object, list[int | None]],
-    dict[object, list[int | None]],
-    dict[object, dict[object, int]],
-]:
-    """Compute coeff_k(tau) for all types by bootstrapping.
-
-    all_types: dict of canon -> (count, edges, n_verts, n_edges)
-
-    Process types in order of increasing edge count.
-    For each tau:
-      1. Compute gamma_k(tau) by line graph iteration
-      2. Enumerate connected subgraphs of tau
-      3. coeff_k(tau) = gamma_k(tau) - sum_{sigma subset tau} coeff_k(sigma) * count(sigma, tau)
-
-    Returns:
-      gammas:  dict canon -> [gamma_0, ..., gamma_max_k]
-      coeffs:  dict canon -> [c_0, ..., c_max_k]
-      subtypes: dict canon -> dict of sub_canon -> count
-    """
-    sorted_types = sorted(all_types.items(), key=lambda x: x[1][3])
-
-    gammas: dict[object, list[int | None]] = {}
-    coeffs: dict[object, list[int | None]] = {}
-    subtypes: dict[object, dict[object, int]] = {}
-
-    total = len(sorted_types)
-
-    for idx, (canon, (_count, edges, nv, ne)) in enumerate(sorted_types):
-        desc = describe_graph(edges)
-        print(
-            f"  [{idx + 1}/{total}] {desc} ({ne} edges)...",
-            end="",
-            flush=True,
-        )
-
-        t0 = time.time()
-
-        # Step 1: compute gamma_k(tau)
-        gamma = gamma_sequence_edgelist(edges, max_k, max_edges=max_edges)
-        gammas[canon] = gamma
-
-        # Step 2: enumerate proper connected subgraphs of tau
-        if ne > 1:
-            sub_counts = enumerate_connected_subgraphs(edges, max_size=ne - 1)
-        else:
-            sub_counts = {}
-        subtypes[canon] = {sc: sv[0] for sc, sv in sub_counts.items()}
-
-        # Step 3: Mobius extraction
-        coeff: list[int | None] = list(gamma)
-        for sub_canon, sub_count in subtypes[canon].items():
-            if sub_canon in coeffs:
-                for k in range(min(len(coeff), len(coeffs[sub_canon]))):
-                    if coeff[k] is not None and coeffs[sub_canon][k] is not None:
-                        coeff[k] -= coeffs[sub_canon][k] * sub_count
-
-        coeffs[canon] = coeff
-
-        elapsed = time.time() - t0
-
-        nonzero = [
-            (k, c)
-            for k, c in enumerate(coeff)
-            if c is not None and c != 0 and k > 0
-        ]
-        if nonzero:
-            nz_str = ", ".join(f"c_{k}={c}" for k, c in nonzero[:6])
-            print(f" {nz_str} ({elapsed:.2f}s)")
-        else:
-            print(f" all zero ({elapsed:.2f}s)")
-
-    return gammas, coeffs, subtypes
+from grahamtools.invariants.fiber import compute_all_coefficients
 
 
 # ============================================================
@@ -225,7 +133,7 @@ def run_fiber_analysis(
     print(f"{'=' * 70}\n")
 
     _gammas, coeffs, _subtypes_map = compute_all_coefficients(
-        all_types, max_k, max_edges=max_edges
+        all_types, max_k, max_edges=max_edges, verbose=True
     )
 
     # ---- Verify decomposition ----

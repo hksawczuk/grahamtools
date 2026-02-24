@@ -9,6 +9,7 @@ from .invariants.graham import (
     graham_sequence_g6,
     graham_signature_g6,
 )
+from .invariants.fiber import compute_all_coefficients
 from .search.collisions_subcubic import find_collision_subcubic
 from .wl.wlk_aligned import wlk_distinguishable_aligned
 from .viz.draw import draw_iterate_pair
@@ -42,6 +43,7 @@ __all__ = [
     "GrahamSignature",
     "graham_sequence_g6",
     "graham_signature_g6",
+    "compute_all_coefficients",
     # Search
     "find_collision_subcubic",
     # WL

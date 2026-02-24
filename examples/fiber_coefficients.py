@@ -8,14 +8,11 @@ kn (default)
     Compute fiber coefficients from L^k(K_n) using the grahamtools
     level-generation / canonical-classification machinery.
 
-knm
-    Recover coefficients analytically via K_{n,m} host graphs and
-    nauty-based enumeration of connected bipartite graph types.
-
-solve
-    Enumerate all connected graph types up to a given edge count, then
-    solve the linear system  gamma_k(K_n) = sum_tau coeff_k(tau) sub(tau, K_n)
-    using exact Gaussian elimination.
+bootstrap
+    Compute fiber coefficients for all tree types up to a given edge
+    count via Mobius inversion bootstrapping — much faster than kn for
+    deep grades since it iterates line graphs of each small tree
+    individually rather than building the full L^k(K_n).
 
 matrix
     Hardcoded coefficient-matrix analysis for the 6 tree types on 6
@@ -25,8 +22,7 @@ matrix
 Usage examples
 --------------
   python3 fiber_coefficients.py kn --n 5 --max-k 7
-  python3 fiber_coefficients.py knm --max-k 7 --max-nm 12
-  python3 fiber_coefficients.py solve 5 16
+  python3 fiber_coefficients.py bootstrap --max-edges 4 --max-k 10
   python3 fiber_coefficients.py matrix
 """
 
@@ -35,25 +31,21 @@ import math
 import sys
 import time
 from collections import defaultdict
-from fractions import Fraction
-from functools import reduce
-from itertools import combinations
-from math import gcd
-
-import networkx as nx
+from itertools import combinations, product
 
 # ---------------------------------------------------------------------------
-# grahamtools imports — replaces all locally reimplemented helpers
+# grahamtools imports
 # ---------------------------------------------------------------------------
 from grahamtools.kn import generate_levels_Kn_ids, expand_to_simple_base_edges_id
 from grahamtools.kn.classify import canon_key
 from grahamtools.utils.automorphisms import aut_size_edges, orbit_size_under_Sn
 from grahamtools.utils.naming import tree_name, describe_graph
-from grahamtools.utils.linalg import exact_rank, row_reduce_fraction
+from grahamtools.utils.linalg import exact_rank
 from grahamtools.utils.linegraph_edgelist import gamma_sequence_edgelist
 from grahamtools.utils.subgraphs import enumerate_connected_subgraphs
-from grahamtools.utils.connectivity import is_connected_edges
-from grahamtools.external.nauty import geng_g6, aut_size_g6, nauty_available
+from grahamtools.utils.canonical import canonical_graph_nauty, canonical_graph_bruteforce
+from grahamtools.external.nauty import nauty_available
+from grahamtools.invariants.fiber import compute_all_coefficients
 
 
 # ===================================================================
@@ -245,606 +237,192 @@ def _print_kn_results(all_fibers: dict, n: int, max_k: int) -> None:
 
 
 # ===================================================================
-#  Subcommand: knm  (K_{n,m} host graph approach)
+#  Subcommand: bootstrap  (Mobius inversion over tree types)
 # ===================================================================
 
-def _enumerate_bipartite(max_edges: int) -> list[tuple]:
-    """Enumerate connected bipartite graphs via nauty's geng -cb.
+def _prufer_to_edges(seq: list[int]) -> list[tuple[int, int]]:
+    """Convert Prufer sequence to edge list."""
+    n = len(seq) + 2
+    degree = [1] * n
+    for v in seq:
+        degree[v] += 1
+    edges = []
+    for v in seq:
+        for u in range(n):
+            if degree[u] == 1:
+                edges.append((min(u, v), max(u, v)))
+                degree[u] -= 1
+                degree[v] -= 1
+                break
+    last = [u for u in range(n) if degree[u] == 1]
+    edges.append((min(last[0], last[1]), max(last[0], last[1])))
+    return edges
 
-    Returns list of (g6, G, nv, ne, bipart, aut, name, is_tree).
+
+def _canonical(edges: list[tuple[int, int]]) -> object:
+    """Canonical form using nauty if available, brute-force otherwise."""
+    if not edges:
+        return ()
+    if nauty_available():
+        return canonical_graph_nauty(edges)
+    return canonical_graph_bruteforce(edges)
+
+
+def _generate_all_trees(max_edges: int) -> dict[object, tuple[int, list[tuple[int, int]], int, int]]:
+    """Generate all non-isomorphic trees with 1..max_edges edges.
+
+    Returns dict of canonical_form -> (1, edges, n_verts, n_edges) compatible
+    with the all_types format expected by compute_all_coefficients.
     """
-    all_graphs: list[tuple] = []
+    all_types: dict[object, tuple[int, list[tuple[int, int]], int, int]] = {}
 
     for ne in range(1, max_edges + 1):
+        nv = ne + 1
         count = 0
-        for nv in range(2, ne + 2):
-            for g6 in geng_g6(
-                nv,
-                connected=True,
-                bipartite=True,
-                min_edges=ne,
-                max_edges=ne,
-            ):
-                G = nx.from_graph6_bytes(g6.encode())
-                if not nx.is_bipartite(G):
-                    continue
-                parts = nx.bipartite.sets(G)
-                a, b = len(parts[0]), len(parts[1])
-                if a > b:
-                    a, b = b, a
 
-                aut = aut_size_g6(g6)
-                is_tree = ne == nv - 1
-
-                deg_seq = sorted([G.degree(v) for v in G.nodes()], reverse=True)
-                if is_tree:
-                    if all(d <= 2 for d in deg_seq):
-                        name = f"P{nv}"
-                    elif deg_seq[0] == ne:
-                        name = f"K1_{ne}"
-                    else:
-                        ds = "".join(str(d) for d in deg_seq)
-                        name = f"T{nv}({ds})"
-                elif ne == nv and all(d == 2 for d in deg_seq):
-                    name = f"C{nv}"
-                elif ne == a * b:
-                    name = f"K{a},{b}"
-                else:
-                    ds = "".join(str(d) for d in deg_seq)
-                    name = f"B{nv}({ds})"
-
-                # Deduplicate names within same edge count
-                existing = [g for g in all_graphs if g[6] == name and g[3] == ne]
-                if existing:
-                    name = f"{name}_{chr(ord('a') + len(existing))}"
-
-                all_graphs.append((g6, G, nv, ne, (a, b), aut, name, is_tree))
+        if nv == 2:
+            edges = [(0, 1)]
+            canon = _canonical(edges)
+            if canon not in all_types:
+                all_types[canon] = (1, edges, nv, ne)
                 count += 1
-
-        n_trees = sum(1 for g in all_graphs if g[3] == ne and g[7])
-        print(f"  {ne}-edge: {count} types ({n_trees} trees, {count - n_trees} non-trees)")
-
-    return all_graphs
-
-
-def _gamma_Knm(n: int, m: int, max_k: int) -> list[int]:
-    """Analytical gamma_k(K_{n,m})."""
-    if n == 0 or m == 0:
-        return [n + m] + [0] * max_k
-    seq = [n + m]
-    v = n * m
-    d = n + m - 2
-    for _ in range(1, max_k + 1):
-        seq.append(v)
-        if v == 0:
-            while len(seq) <= max_k:
-                seq.append(0)
-            break
-        e = v * d // 2
-        v = e
-        d = 2 * d - 2
-    return seq
-
-
-def _falling(n: int, k: int) -> int:
-    """Falling factorial n^{down-k}."""
-    if k < 0 or k > n:
-        return 0
-    r = 1
-    for i in range(k):
-        r *= n - i
-    return r
-
-
-def _count_in_Knm(
-    bipart: tuple[int, int], aut: int, n: int, m: int
-) -> Fraction:
-    """count(tau, K_{n,m}) for bipartite tau with partition sizes (a, b)."""
-    a, b = bipart
-    total = _falling(n, a) * _falling(m, b) + _falling(n, b) * _falling(m, a)
-    return Fraction(total, aut)
-
-
-def _solve_system(
-    M: list[list[Fraction]], b: list[Fraction], n_vars: int
-) -> tuple[list[Fraction], int, list[int]]:
-    """Gaussian elimination with exact Fraction arithmetic."""
-    n_eqs = len(b)
-    aug = [M[i][:] + [b[i]] for i in range(n_eqs)]
-
-    pivot_row = 0
-    pivot_cols: list[int] = []
-    for col in range(n_vars):
-        piv = None
-        for r in range(pivot_row, n_eqs):
-            if aug[r][col] != 0:
-                piv = r
-                break
-        if piv is None:
-            continue
-        aug[pivot_row], aug[piv] = aug[piv], aug[pivot_row]
-        pivot_cols.append(col)
-        scale = aug[pivot_row][col]
-        for j in range(n_vars + 1):
-            aug[pivot_row][j] /= scale
-        for r in range(n_eqs):
-            if r != pivot_row and aug[r][col] != 0:
-                f = aug[r][col]
-                for j in range(n_vars + 1):
-                    aug[r][j] -= f * aug[pivot_row][j]
-        pivot_row += 1
-
-    rank = len(pivot_cols)
-    x = [Fraction(0)] * n_vars
-    for i, col in enumerate(pivot_cols):
-        x[col] = aug[i][n_vars]
-
-    return x, rank, pivot_cols
-
-
-def cmd_knm(args: argparse.Namespace) -> None:
-    """Recover coefficients via K_{n,m} host graphs."""
-    max_k = args.max_k
-    max_nm = args.max_nm
-
-    if not nauty_available():
-        print("ERROR: nauty (geng, shortg) required for 'knm' subcommand")
-        sys.exit(1)
-
-    print("=" * 70)
-    print("  Enumerating connected bipartite graphs")
-    print("=" * 70)
-    all_graphs = _enumerate_bipartite(max_k)
-    all_graphs.sort(key=lambda g: (g[3], g[2], g[6]))
-    print(f"\n  Total: {len(all_graphs)} types")
-
-    # Signature collisions
-    sig_groups: dict[tuple, list] = defaultdict(list)
-    for g in all_graphs:
-        sig_groups[(g[4], g[5])].append(g)
-
-    print(f"\n  Signature collisions (bipart, |Aut|):")
-    for sig, gs in sorted(sig_groups.items()):
-        if len(gs) > 1:
-            names = [g[6] for g in gs]
-            print(f"    {sig}: {names}")
-
-    # Host graphs
-    host_params = [
-        (n, m) for n in range(1, max_nm + 1) for m in range(n, max_nm + 1)
-    ]
-    print(f"\n  Host graphs: {len(host_params)} K_{{n,m}} pairs (max n,m={max_nm})")
-
-    # Solve grade by grade
-    print(f"\n{'=' * 70}")
-    print(f"  Solving for coefficients grade by grade")
-    print(f"{'=' * 70}")
-
-    all_coeffs: dict[tuple[int, str], Fraction] = {}
-
-    for k in range(1, max_k + 1):
-        active = [g for g in all_graphs if g[3] <= k]
-        n_active = len(active)
-        active_names = [g[6] for g in active]
-
-        print(f"\n  Grade k={k}: {n_active} unknowns")
-
-        equations: list[tuple[str, list[Fraction], Fraction]] = []
-        for n, m in host_params:
-            gamma = _gamma_Knm(n, m, k)
-            if k >= len(gamma):
-                continue
-            gamma_k = Fraction(gamma[k])
-            counts = [_count_in_Knm(g[4], g[5], n, m) for g in active]
-            if all(c == 0 for c in counts):
-                continue
-            equations.append((f"K_{{{n},{m}}}", counts, gamma_k))
-
-        M_mat = [eq[1] for eq in equations]
-        b_vec = [eq[2] for eq in equations]
-        x, rank, pivots = _solve_system(M_mat, b_vec, n_active)
-
-        free = [j for j in range(n_active) if j not in pivots]
-        print(f"    {len(equations)} equations, rank {rank}/{n_active}")
-        if free:
-            free_names = [active_names[j] for j in free]
-            print(f"    Free variables ({len(free)}): {free_names}")
-
-        for j, g in enumerate(active):
-            all_coeffs[(k, g[6])] = x[j]
-
-        tree_coeffs = [
-            (g[6], x[j])
-            for j, g in enumerate(active)
-            if g[7] and x[j] != 0
-        ]
-        if tree_coeffs:
-            tc_str = ", ".join(f"{nm}={v}" for nm, v in tree_coeffs)
-            print(f"    Tree coefficients: {tc_str}")
-
-    # Tree coefficient matrix
-    trees = [g for g in all_graphs if g[7]]
-    print(f"\n{'=' * 70}")
-    print(f"  Tree coefficient submatrix ({len(trees)} trees)")
-    print(f"{'=' * 70}")
-
-    tree_names_list = [g[6] for g in trees]
-    col_w = max(max(len(nm) for nm in tree_names_list), 8) + 2
-    header = "  grade" + "".join(f"{nm:>{col_w}}" for nm in tree_names_list)
-    print(header)
-
-    for k in range(1, max_k + 1):
-        vals = []
-        for g in trees:
-            v = all_coeffs.get((k, g[6]), Fraction(0))
-            if v.denominator == 1:
-                vals.append(f"{int(v):>{col_w}}")
-            else:
-                vals.append(f"{str(v):>{col_w}}")
-        print(f"  k={k:<3d}" + "".join(vals))
-
-    # All coefficients
-    print(f"\n{'=' * 70}")
-    print(f"  All bipartite type coefficients")
-    print(f"{'=' * 70}")
-
-    for ne in range(1, max_k + 1):
-        types_ne = [g for g in all_graphs if g[3] == ne]
-        if not types_ne:
-            continue
-        print(f"\n  {ne}-edge types:")
-        for g in types_ne:
-            tree_tag = " (tree)" if g[7] else ""
-            sig = f"bipart={g[4]}, |Aut|={g[5]}"
-            coeff_str = []
-            for k in range(ne, max_k + 1):
-                v = all_coeffs.get((k, g[6]), Fraction(0))
-                if v.denominator == 1:
-                    coeff_str.append(str(int(v)))
-                else:
-                    coeff_str.append(str(v))
-            print(
-                f"    {g[6]:>16s}{tree_tag:>8s}  [{sig}]  "
-                f"k={ne}..{max_k}: {', '.join(coeff_str)}"
-            )
-
-    # Comparison with Moebius values
-    print(f"\n{'=' * 70}")
-    print(f"  Comparison with Moebius inversion values")
-    print(f"{'=' * 70}")
-
-    known = {
-        (1, "K2"): 1, (1, "P2"): 1,
-        (2, "P3"): 1,
-        (3, "K1_3"): 3, (3, "P4"): 1,
-        (4, "K1_3"): 3, (4, "K1_4"): 24, (4, "P5"): 1, (4, "fork"): 5,
-        (5, "K1_3"): 3, (5, "K1_4"): 168, (5, "P5"): 0, (5, "fork"): 15,
-        (5, "K1_5"): 480, (5, "P6"): 1,
-        (6, "K1_3"): 3, (6, "K1_4"): 1608, (6, "fork"): 61,
-        (6, "K1_5"): 14880, (6, "K1_6"): 23040,
-        (7, "K1_3"): 3, (7, "K1_4"): 27528, (7, "fork"): 393,
-        (7, "K1_5"): 619680, (7, "K1_6"): 2557440,
-    }
-
-    mismatches = matches = 0
-    for (k, name), expected in sorted(known.items()):
-        got = all_coeffs.get((k, name))
-        if got is None:
-            continue
-        if got != Fraction(expected):
-            print(f"  MISMATCH: coeff_{k}({name}) = {got}, expected {expected}")
-            mismatches += 1
+        elif nv == 3:
+            edges = [(0, 1), (1, 2)]
+            canon = _canonical(edges)
+            if canon not in all_types:
+                all_types[canon] = (1, edges, nv, ne)
+                count += 1
         else:
-            matches += 1
+            for seq in product(range(nv), repeat=nv - 2):
+                edges = _prufer_to_edges(list(seq))
+                canon = _canonical(edges)
+                if canon not in all_types:
+                    all_types[canon] = (1, edges, nv, ne)
+                    count += 1
 
-    if mismatches == 0:
-        print(f"  All {matches} checked values match")
-    else:
-        print(f"  {matches} match, {mismatches} mismatch")
+        print(f"  {ne}-edge trees: {count} types")
 
-
-# ===================================================================
-#  Subcommand: solve  (coefficient system via Gaussian elimination)
-# ===================================================================
-
-def _enumerate_connected_graphs_nx(max_edges: int) -> list[tuple]:
-    """Enumerate all connected graphs with 1..max_edges edges.
-
-    Returns list of (G, n_vertices, n_edges, aut_size).
-    """
-    all_types: list[tuple] = []
-
-    for e in range(1, max_edges + 1):
-        types_this_e: list[tuple] = []
-        for v in range(2, e + 2):
-            if e > v * (v - 1) // 2 or e < v - 1:
-                continue
-            all_possible = list(combinations(range(v), 2))
-            for edge_combo in combinations(all_possible, e):
-                G = nx.Graph()
-                G.add_nodes_from(range(v))
-                G.add_edges_from(edge_combo)
-                if not nx.is_connected(G):
-                    continue
-                is_new = True
-                for G2, v2, e2, _ in types_this_e:
-                    if v2 == v and nx.is_isomorphic(G, G2):
-                        is_new = False
-                        break
-                if is_new:
-                    aut = _count_automorphisms_nx(G)
-                    types_this_e.append((G, v, e, aut))
-        all_types.extend(types_this_e)
-        print(
-            f"  e={e}: {len(types_this_e)} types "
-            f"(cumulative: {len(all_types)})",
-            flush=True,
-        )
     return all_types
 
 
-def _count_automorphisms_nx(G: nx.Graph) -> int:
-    """Brute-force automorphism count for a networkx graph."""
-    from itertools import permutations as _perms
-
-    nodes = sorted(G.nodes())
-    edge_set = set(frozenset(e) for e in G.edges())
-    count = 0
-    for perm in _perms(nodes):
-        mapping = dict(zip(nodes, perm))
-        if set(frozenset((mapping[u], mapping[v])) for u, v in G.edges()) == edge_set:
-            count += 1
-    return count
-
-
-def _classify_type_nx(G: nx.Graph) -> str:
-    """Classify a small graph by degree sequence / structure."""
-    v = G.number_of_nodes()
-    e = G.number_of_edges()
-    deg_seq = tuple(sorted(dict(G.degree()).values()))
-
-    if e == v - 1:  # tree
-        if e == 1:
-            return "K2"
-        if e == 2:
-            return "P3"
-        if e == 3:
-            if max(deg_seq) == 3:
-                return "K1_3"
-            return "P4"
-        if e == 4:
-            if max(deg_seq) == 4:
-                return "K1_4"
-            if max(deg_seq) == 3:
-                return "fork"
-            return "P5"
-        if e == 5:
-            if max(deg_seq) == 5:
-                return "K1_5"
-            if deg_seq == (1, 1, 2, 2, 2, 2):
-                return "P6"
-            if deg_seq == (1, 1, 1, 1, 3, 3):
-                return "dblstar"
-            if deg_seq == (1, 1, 1, 1, 2, 4):
-                return "spider"
-            if deg_seq == (1, 1, 1, 2, 2, 3):
-                v3 = [nd for nd in G.nodes() if G.degree(nd) == 3][0]
-                nbr_degs = sorted(G.degree(u) for u in G.neighbors(v3))
-                return "catA" if nbr_degs == [1, 2, 2] else "catB"
-        return f"tree_{v}v_{deg_seq}"
-    return f"g{v}v{e}e_{deg_seq}"
-
-
-def _gamma_k_Kn(k: int, n: int) -> int:
-    """gamma_k(K_n) = |V(L^k(K_n))| computed analytically."""
-    v = n * (n - 1) // 2
-    d = 2 * (n - 2)
-    for _ in range(2, k + 1):
-        v = v * d // 2
-        d = 2 * d - 2
-    return v * d // 2
-
-
-def _sub_tau_Kn(v_tau: int, aut_size: int, n: int) -> int:
-    """sub(tau, K_n) = n^{down v_tau} / |Aut(tau)|."""
-    if n < v_tau:
-        return 0
-    ff = 1
-    for i in range(v_tau):
-        ff *= n - i
-    return ff // aut_size
-
-
-def _solve_grade(
-    k: int,
-    active_indices: list[int],
-    all_types: list[tuple],
-    n_values: list[int],
-) -> tuple[dict[int, int] | None, object]:
-    """Solve for coeff_k(tau) for active types."""
-    n_unknowns = len(active_indices)
-    n_eqs = len(n_values)
-
-    S = []
-    gamma = []
-    for n_val in n_values:
-        row = []
-        for j in active_indices:
-            _, v, e, aut = all_types[j]
-            row.append(Fraction(_sub_tau_Kn(v, aut, n_val)))
-        S.append(row)
-        gamma.append(Fraction(_gamma_k_Kn(k, n_val)))
-
-    aug = [S[i][:] + [gamma[i]] for i in range(n_eqs)]
-
-    # Gaussian elimination
-    for col in range(n_unknowns):
-        pivot = None
-        for row in range(col, min(n_unknowns, n_eqs)):
-            if aug[row][col] != 0:
-                pivot = row
-                break
-        if pivot is None:
-            return None, f"SINGULAR at column {col} ({active_indices[col]})"
-        if pivot != col:
-            aug[col], aug[pivot] = aug[pivot], aug[col]
-        for row in range(n_eqs):
-            if row != col and aug[row][col] != 0:
-                factor = aug[row][col] / aug[col][col]
-                for j in range(n_unknowns + 1):
-                    aug[row][j] -= factor * aug[col][j]
-
-    solution: dict[int, int] = {}
-    for ci, j in enumerate(active_indices):
-        val = aug[ci][n_unknowns] / aug[ci][ci]
-        if val.denominator != 1:
-            return None, f"Non-integer coeff for type {j}: {val}"
-        solution[j] = int(val)
-
-    max_residual = Fraction(0)
-    for i in range(n_unknowns, n_eqs):
-        max_residual = max(max_residual, abs(aug[i][n_unknowns]))
-
-    return solution, max_residual
-
-
-def cmd_solve(args: argparse.Namespace) -> None:
-    """Solve coefficient system using enumerated graph types."""
+def cmd_bootstrap(args: argparse.Namespace) -> None:
+    """Compute fiber coefficients via Mobius inversion bootstrapping."""
     max_edges = args.max_edges
-    max_grade = args.max_grade
+    max_k = args.max_k
+    max_line_edges = args.max_line_edges
 
-    print(f"Parameters: max_edges={max_edges}, max_grade={max_grade}\n")
-
-    print("Enumerating connected graph types...")
-    t0 = time.time()
-    all_types = _enumerate_connected_graphs_nx(max_edges)
-    print(f"Total types: {len(all_types)} ({time.time() - t0:.1f}s)\n")
-
-    type_names = [_classify_type_nx(G) for G, _, _, _ in all_types]
-    type_is_tree = [e == v - 1 for _, v, e, _ in all_types]
-    type_edges = [e for _, _, e, _ in all_types]
-
-    for e in range(1, max_edges + 1):
-        types_e = [
-            (i, type_names[i], all_types[i][1], all_types[i][3])
-            for i in range(len(all_types))
-            if type_edges[i] == e
-        ]
-        trees_e = [x for x in types_e if type_is_tree[x[0]]]
-        print(f"  e={e}: {len(types_e)} types ({len(trees_e)} trees)")
-        for idx, name, v, aut in types_e:
-            tree_mark = " [TREE]" if type_is_tree[idx] else ""
-            print(f"    {name}: {v}v, |Aut|={aut}{tree_mark}")
-
-    v_max = max(v for _, v, _, _ in all_types)
-    all_coeffs: dict[int, dict[int, int]] = {}
-
-    print(f"\nComputing coefficients grade by grade...\n")
-
-    for k in range(1, max_grade + 1):
-        t0 = time.time()
-        active = [i for i in range(len(all_types)) if type_edges[i] <= k]
-        n_active = len(active)
-        n_extra = 5
-        n_values = list(range(v_max, v_max + n_active + n_extra))
-
-        solution, info = _solve_grade(k, active, all_types, n_values)
-        elapsed = time.time() - t0
-
-        if solution is None:
-            print(f"  Grade {k}: FAILED -- {info} ({elapsed:.2f}s)")
-            continue
-
-        all_coeffs[k] = solution
-        nonzero = sum(1 for v in solution.values() if v != 0)
-        tree_coeffs = [
-            (type_names[j], solution[j])
-            for j in active
-            if type_is_tree[j] and solution[j] != 0
-        ]
-        print(
-            f"  Grade {k}: {n_active} unknowns, {nonzero} nonzero, "
-            f"residual={info} ({elapsed:.2f}s)"
-        )
-        if tree_coeffs:
-            tc_str = ", ".join(f"{nm}={val}" for nm, val in tree_coeffs)
-            print(f"    Trees: {tc_str}")
-
-    # Tree independence analysis
-    print(f"\n{'=' * 70}")
-    print(f"TREE COEFFICIENT INDEPENDENCE ANALYSIS")
+    print(f"{'=' * 70}")
+    print(f"  Bootstrap: Mobius inversion for trees up to {max_edges} edges, max_k={max_k}")
     print(f"{'=' * 70}")
 
-    for target_e in range(1, max_edges + 1):
-        tree_indices = [
-            i
-            for i in range(len(all_types))
-            if type_is_tree[i] and type_edges[i] == target_e
-        ]
-        n_trees = len(tree_indices)
-        if n_trees <= 1:
-            continue
+    # Step 1: enumerate all tree types
+    print(f"\nEnumerating tree types...")
+    all_types = _generate_all_trees(max_edges)
+    print(f"  Total: {len(all_types)} tree types")
 
-        tree_labels = [type_names[i] for i in tree_indices]
-        min_grade = target_e
-        grades = list(range(min_grade, max_grade + 1))
-        n_rows = len(grades)
+    # Step 2: compute coefficients via Mobius inversion
+    print(f"\nComputing coefficients by Mobius inversion...")
+    gammas, coeffs, subtypes = compute_all_coefficients(
+        all_types, max_k, max_edges=max_line_edges, verbose=True,
+    )
 
-        M: list[list[int]] = []
-        for k in grades:
-            row = [all_coeffs.get(k, {}).get(j, 0) for j in tree_indices]
-            M.append(row)
+    # Step 3: print results
+    _print_bootstrap_results(all_types, coeffs, gammas, max_k)
 
-        print(f"\nTrees with {target_e} edges ({n_trees} types): {tree_labels}")
-        header = "  grade " + "".join(f"{nm:>14}" for nm in tree_labels)
-        print(header)
-        for ki, k in enumerate(grades):
-            row_str = f"  k={k:2d}  " + "".join(
-                f"{M[ki][ti]:>14}" for ti in range(n_trees)
-            )
-            print(row_str)
 
-        rank = exact_rank(M, n_rows, n_trees)
-        status = "FULL RANK" if rank == n_trees else "RANK DEFICIENT"
-        print(f"\n  Rank: {rank} / {n_trees} -- {status}")
+def _print_bootstrap_results(
+    all_types: dict,
+    coeffs: dict,
+    gammas: dict,
+    max_k: int,
+) -> None:
+    """Print coefficient table and growth rates for bootstrap results."""
+    # Build sorted list of types by edge count
+    sorted_canons = sorted(all_types.keys(), key=lambda c: all_types[c][3])
 
-        print("  Cumulative rank:")
-        for nk in range(1, min(n_rows + 1, n_trees + 3)):
-            r = exact_rank(M[:nk], nk, n_trees)
-            print(f"    Grades {min_grade}..{min_grade + nk - 1}: rank {r}")
+    # Collect all grades where at least one type has a nonzero coefficient
+    all_grades: set[int] = set()
+    for canon in sorted_canons:
+        for k, c in enumerate(coeffs.get(canon, [])):
+            if c is not None and c != 0 and k > 0:
+                all_grades.add(k)
+    grades = sorted(all_grades)
+    if not grades:
+        print("\nNo nonzero coefficients found.")
+        return
 
-    # All trees together
-    all_tree_indices = [i for i in range(len(all_types)) if type_is_tree[i]]
-    n_all_trees = len(all_tree_indices)
-    all_tree_labels = [type_names[i] for i in all_tree_indices]
-    min_e = min(type_edges[i] for i in all_tree_indices)
-    grades = list(range(min_e, max_grade + 1))
-    n_rows = len(grades)
+    # Coefficient table
+    print(f"\n{'=' * 70}")
+    print(f"  Coefficient table: coeff_k(tau)")
+    print(f"{'=' * 70}")
 
-    M = []
+    hdr = f"  {'Type':>20s} {'|e|':>4s}"
     for k in grades:
-        row = [all_coeffs.get(k, {}).get(j, 0) for j in all_tree_indices]
-        M.append(row)
+        hdr += f" {'k=' + str(k):>12s}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
 
+    for canon in sorted_canons:
+        _, edges, nv, ne = all_types[canon]
+        name = describe_graph(edges)
+        cvec = coeffs.get(canon, [])
+        row = f"  {name:>20s} {ne:>4d}"
+        for k in grades:
+            c = cvec[k] if k < len(cvec) else None
+            if c is not None and c != 0:
+                row += f" {c:>12d}"
+            else:
+                row += f" {'':>12s}"
+        print(row)
+
+    # Growth rates
     print(f"\n{'=' * 70}")
-    print(f"ALL TREES ({n_all_trees} types): {all_tree_labels}")
+    print(f"  Growth rates: coeff_k / coeff_{{k-1}}")
     print(f"{'=' * 70}")
-    header = "  grade " + "".join(f"{nm:>14}" for nm in all_tree_labels)
-    print(header)
-    for ki, k in enumerate(grades):
-        row_str = f"  k={k:2d}  " + "".join(
-            f"{M[ki][ti]:>14}" for ti in range(n_all_trees)
-        )
-        print(row_str)
 
-    rank = exact_rank(M, n_rows, n_all_trees)
-    status = "FULL RANK" if rank == n_all_trees else "RANK DEFICIENT"
-    print(f"\n  Rank: {rank} / {n_all_trees} -- {status}")
+    hdr = f"  {'Type':>20s}"
+    for k in grades[1:]:
+        hdr += f" {'k=' + str(k):>12s}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
 
-    print("  Cumulative rank:")
-    for nk in range(1, min(n_rows + 1, n_all_trees + 3)):
-        r = exact_rank(M[:nk], nk, n_all_trees)
-        print(f"    Grades {min_e}..{min_e + nk - 1}: rank {r}")
+    for canon in sorted_canons:
+        _, edges, nv, ne = all_types[canon]
+        name = describe_graph(edges)
+        cvec = coeffs.get(canon, [])
+        row = f"  {name:>20s}"
+        for k in grades[1:]:
+            c = cvec[k] if k < len(cvec) else None
+            cp = cvec[k - 1] if (k - 1) < len(cvec) else None
+            if c is not None and cp is not None and cp > 0:
+                row += f" {c / cp:>12.2f}"
+            else:
+                row += f" {'':>12s}"
+        print(row)
+
+    # Log2 analysis
+    print(f"\n{'=' * 70}")
+    print(f"  Log2 analysis")
+    print(f"{'=' * 70}")
+
+    hdr = f"  {'Type':>20s}"
+    for k in grades:
+        hdr += f" {'k=' + str(k):>12s}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+
+    for canon in sorted_canons:
+        _, edges, nv, ne = all_types[canon]
+        name = describe_graph(edges)
+        cvec = coeffs.get(canon, [])
+        row = f"  {name:>20s}"
+        for k in grades:
+            c = cvec[k] if k < len(cvec) else None
+            if c is not None and c > 0:
+                row += f" {math.log2(c):>12.2f}"
+            else:
+                row += f" {'':>12s}"
+        print(row)
 
 
 # ===================================================================
@@ -1111,24 +689,20 @@ def main() -> None:
     p_kn.add_argument("--n", type=int, default=5, help="Complete graph K_n (default: 5)")
     p_kn.add_argument("--max-k", type=int, default=7, help="Maximum grade (default: 7)")
 
-    # -- knm --
-    p_knm = subparsers.add_parser(
-        "knm",
-        help="K_{n,m} bipartite host graph analysis",
+    # -- bootstrap --
+    p_boot = subparsers.add_parser(
+        "bootstrap",
+        help="Compute coefficients via Mobius inversion bootstrapping",
     )
-    p_knm.add_argument("--max-k", type=int, default=7, help="Maximum grade (default: 7)")
-    p_knm.add_argument(
-        "--max-nm", type=int, default=12,
-        help="Max value of n, m for K_{n,m} host graphs (default: 12)",
+    p_boot.add_argument(
+        "--max-edges", type=int, default=5,
+        help="Maximum tree edge count to enumerate (default: 5)",
     )
-
-    # -- solve --
-    p_solve = subparsers.add_parser(
-        "solve",
-        help="Solve coefficient system via enumerated graph types",
+    p_boot.add_argument("--max-k", type=int, default=10, help="Maximum grade (default: 10)")
+    p_boot.add_argument(
+        "--max-line-edges", type=int, default=5_000_000,
+        help="Edge cap for line graph iteration (default: 5000000)",
     )
-    p_solve.add_argument("max_edges", type=int, nargs="?", default=5, help="Max edges (default: 5)")
-    p_solve.add_argument("max_grade", type=int, nargs="?", default=16, help="Max grade (default: 16)")
 
     # -- matrix --
     subparsers.add_parser(
@@ -1140,16 +714,13 @@ def main() -> None:
 
     if args.command is None or args.command == "kn":
         if args.command is None:
-            # Set defaults for the kn command when invoked with no subcommand
             if not hasattr(args, "n"):
                 args.n = 5
             if not hasattr(args, "max_k"):
                 args.max_k = 7
         cmd_kn(args)
-    elif args.command == "knm":
-        cmd_knm(args)
-    elif args.command == "solve":
-        cmd_solve(args)
+    elif args.command == "bootstrap":
+        cmd_bootstrap(args)
     elif args.command == "matrix":
         cmd_matrix(args)
 
